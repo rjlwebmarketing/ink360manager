@@ -57,7 +57,7 @@ test('Owner can’t change codes; Builder can, and everyone else is signed out',
   const o = (await login(OWNER)).body.token;
   const denied = await api('/api/auth/codes', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ owner:'new-owner-123' }) }, o);
   assert.equal(denied.status, 403);
-  const short = await api('/api/auth/codes', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ owner:'short' }) });
+  const short = await api('/api/auth/codes', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ owner:'ab' }) });
   assert.equal(short.status, 400);
   const ok = await (await api('/api/auth/codes', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ owner:'new-owner-123' }) })).json();
   assert.equal(ok.ok, true); assert.ok(ok.signedOut >= 1);
