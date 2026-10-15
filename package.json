@@ -1,0 +1,20 @@
+{
+  "name": "ink360-management",
+  "version": "0.8.1",
+  "private": true,
+  "description": "ink360 Management server: data API for the ink360 app and the WPForms website-lead endpoint.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "test": "node tools/run-tests.js",
+    "make-key": "node tools/generate-key.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "mysql2": "^3.11.3",
+    "pg": "^8.13.1"
+  }
+}
