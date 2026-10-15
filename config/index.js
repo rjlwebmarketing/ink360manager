@@ -15,11 +15,14 @@ module.exports = {
   databaseUrl: process.env.DATABASE_URL || '',
   devDataFile: process.env.DATA_FILE || path.join(__dirname, '..', 'data', 'dev-store.json'),
 
+  // Logins: OWNER_CODE / BUILDER_CODE (8+ characters) set the two access codes on first start;
+  // after that, codes changed in the app win. RESET_CODES=true re-applies the variables. (Read in lib/auth.js.)
+
   // Shared key WPForms sends in the X-Ink360-Key header.
   wpformsKey: process.env.WPFORMS_KEY || '',
 
   // Web addresses allowed to use the data API from a browser — the domain where index.html lives,
-  // e.g. "https://app.ink360.com". Comma-separate several.
+  // e.g. "https://ops.ink360.com". Comma-separate several.
   allowedOrigins: list(process.env.ALLOWED_ORIGINS),
 
   // Optional: also serve the app page from this server (local testing). Path to an index.html.

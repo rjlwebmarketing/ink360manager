@@ -5,9 +5,11 @@ const { send } = require('../lib/http');
 
 module.exports = function health(req, res, { store }){
   const dbOk = store.selfTest === 'passed';
+  const loginsOk = store.logins === 'set';
   return send(res, dbOk ? 200 : 503, {
-    ok: dbOk,
+    ok: dbOk && loginsOk,
     database: store.selfTest || 'not run',
+    logins: store.logins || 'not run',
     version: config.version,
     storage: store.kind,
     webhook: !!config.wpformsKey,
