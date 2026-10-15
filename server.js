@@ -1,6 +1,7 @@
 /* ============================================================
    ink360 Management — server (entry point)
-   Holds the app's data (Postgres) and receives website leads from WPForms.
+   Holds the app's data (MySQL) and receives website leads from WPForms;
+   Claude drafts a quote for each new lead (lib/autoquote.js).
    The app page itself is hosted on ink360's domain and calls this server.
 
    config/   settings from environment variables
@@ -14,12 +15,15 @@ const config = require('./config');
 const { createStore, selfTest } = require('./lib/store');
 const { send, applyCors } = require('./lib/http');
 const { createAuth } = require('./lib/auth');
+const { seedCatalog } = require('./lib/qb-items');
+const autoquote = require('./lib/autoquote');
 
 const routes = {
   health:  require('./routes/health'),
   docs:    require('./routes/docs'),
   auth:    require('./routes/auth'),
   wpforms: require('./routes/wpforms'),
+  autoquote: require('./routes/autoquote'),
   appPage: require('./routes/app-page')
 };
 
@@ -30,7 +34,7 @@ async function route(req, res){
   const url = new URL(req.url, 'http://localhost');
   const p = url.pathname;
   const ctx = { store, auth, url, session: null };
-  const fromApp = p.startsWith('/api/docs') || p === '/api/login' || p === '/api/session' || p.startsWith('/api/auth/') || p === '/healthz';
+  const fromApp = p.startsWith('/api/docs') || p === '/api/login' || p === '/api/session' || p.startsWith('/api/auth/') || p.startsWith('/api/autoquote') || p === '/healthz';
 
   // Browser calls from the app on ink360's domain
   if(fromApp){
@@ -42,6 +46,7 @@ async function route(req, res){
   if(p === '/healthz' && req.method === 'GET') return routes.health(req, res, ctx);
   if(p === '/api/login' || p === '/api/session' || p.startsWith('/api/auth/')) return routes.auth(req, res, ctx);
   if(p === '/api/docs' || p.startsWith('/api/docs/')) return routes.docs(req, res, ctx);
+  if(p === '/api/autoquote' || p.startsWith('/api/autoquote/')) return routes.autoquote(req, res, ctx);
   if(p === '/api/hooks/wpforms') return routes.wpforms(req, res, ctx);
   if(req.method === 'GET' && (p === '/' || p === '/index.html')) return routes.appPage(req, res, ctx);
   return send(res, 404, { error:'Not found' });
@@ -60,7 +65,10 @@ store.init().then(async () => {
   catch(err){ store.selfTest = 'failed: ' + err.message; console.error('Database self-test failed:', err); }
   try { store.logins = await auth.init(); }
   catch(err){ store.logins = 'failed: ' + err.message; console.error('Login setup failed:', err); }
+  try { store.qbItems = await seedCatalog(store); }
+  catch(err){ store.qbItems = 'failed: ' + err.message; console.error('QuickBooks list setup failed:', err); }
+  const aq = autoquote.status();
   server.listen(config.port, () => console.log(
-    `ink360 server v${config.version} on :${config.port} — storage: ${store.kind} (self-test ${store.selfTest}); logins ${store.logins}; webhook key ${config.wpformsKey ? 'set' : 'NOT set'}; allowed origins: ${config.allowedOrigins.join(', ') || 'none'}`
+    `ink360 server v${config.version} on :${config.port} — storage: ${store.kind} (self-test ${store.selfTest}); logins ${store.logins}; webhook key ${config.wpformsKey ? 'set' : 'NOT set'}; QuickBooks list ${store.qbItems}; draft quotes ${aq.enabled ? (aq.auto ? 'on (' + aq.model + ')' : 'manual only') : 'off (no ANTHROPIC_API_KEY)'}; allowed origins: ${config.allowedOrigins.join(', ') || 'none'}`
   ));
 }).catch(err => { console.error('Storage failed to start:', err); process.exit(1); });

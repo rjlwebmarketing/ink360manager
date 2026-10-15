@@ -15,7 +15,7 @@ module.exports = {
   databaseUrl: process.env.DATABASE_URL || '',
   devDataFile: process.env.DATA_FILE || path.join(__dirname, '..', 'data', 'dev-store.json'),
 
-  // Logins: OWNER_CODE / BUILDER_CODE (8+ characters) set the two access codes on first start;
+  // Logins: OWNER_CODE / BUILDER_CODE (3+ characters, MIN_CODE_LENGTH) set the two access codes on first start;
   // after that, codes changed in the app win. RESET_CODES=true re-applies the variables. (Read in lib/auth.js.)
 
   // Shared key WPForms sends in the X-Ink360-Key header.
@@ -27,6 +27,9 @@ module.exports = {
 
   // Optional: also serve the app page from this server (local testing). Path to an index.html.
   appFile: process.env.APP_FILE || '',
+
+  // Draft quotes (read in lib/autoquote.js): ANTHROPIC_API_KEY turns them on; AUTO_QUOTE=off = only on request
+  // from the app; ANTHROPIC_MODEL picks the model (default claude-sonnet-5-5).
 
   maxBodyBytes: 5 * 1024 * 1024,
   webhookRateLimitPerMinute: 30,

@@ -1,5 +1,6 @@
 /* Server tests — starts the server with a throwaway file store and checks the
-   data API, cross-origin access and the WPForms endpoint. Run: npm test */
+   data API, cross-origin access, the WPForms endpoint and draft quotes
+   (against a stand-in for the Claude API, so no key or network is needed). Run: npm test */
 'use strict';
 const { spawn } = require('node:child_process');
 const fs = require('node:fs'); const os = require('node:os'); const path = require('node:path');
@@ -11,8 +12,26 @@ const dataFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ink360-')), 's
 const base = `http://127.0.0.1:${PORT}`;
 const ORIGIN = 'https://app.ink360.example';
 const OWNER = 'owner-code-1', BUILDER = 'builder-code-1';
-const env = Object.assign({}, process.env, { PORT, WPFORMS_KEY: KEY, DATA_FILE: dataFile, ALLOWED_ORIGINS: ORIGIN + '/', OWNER_CODE: OWNER, BUILDER_CODE: BUILDER });
-delete env.APP_FILE; delete env.RESET_CODES;
+// Stand-in for the Claude API: answers like Claude would, and records what it was sent.
+const http = require('node:http');
+const CLAUDE_PORT = PORT + 100;
+const claudeCalls = [];
+const fakeClaude = http.createServer((req, res) => {
+  let raw = ''; req.on('data', d => raw += d); req.on('end', () => {
+    const body = JSON.parse(raw); claudeCalls.push({ headers: req.headers, body });
+    const text = body.messages[0].content;
+    const reply = input => { res.writeHead(200, { 'content-type':'application/json' }); res.end(JSON.stringify({ content:[{ type:'tool_use', id:'t1', name:'record_quote_request', input }], usage:{ input_tokens: 10, output_tokens: 5 } })); };
+    if(/FAIL-ME/.test(text)){ res.writeHead(400, { 'content-type':'application/json' }); return res.end(JSON.stringify({ error:{ message:'bad request (test)' } })); }
+    if(/hiring|resume/i.test(text)) return reply({ is_quote_request:false, summary:'Job application.', industry:'unknown', items:[], questions:[], confidence:'high' });
+    if(/Harbor Ridge/.test(text)) return reply({ is_quote_request:true, summary:'Harbor Ridge wants 2 flavors printed.', industry:'spirits', confidence:'medium',
+      items:[ { flavor:'Dark Rye', quantity:3000, passes:2, print_description:'2 colors front', shape:null, tapered:null, size_ml:null, bottle_code:'375ARIBT', bottle_name:'Arizona 375', repeat:false, control_no:null, guessed:[] },
+              { flavor:'Gin', quantity:null, passes:null, shape:null, tapered:null, size_ml:null, bottle_code:'NOT-A-REAL-CODE', repeat:null, guessed:[] } ],
+      questions:[ { about:'quantity', question:'How many Gin bottles?' } ], other_requests:'Needs art help' });
+    return reply({ is_quote_request:true, summary:'Generic request.', industry:'wine', confidence:'low', items:[ { flavor:'Product 1', quantity:6000, passes:1, shape:'square', tapered:true, size_ml:1000, bottle_code:null, repeat:null, guessed:['bottle'] } ], questions:[] });
+  });
+}).listen(CLAUDE_PORT);
+const env = Object.assign({}, process.env, { ANTHROPIC_API_KEY:'test-anthropic-key', ANTHROPIC_BASE_URL:`http://127.0.0.1:${CLAUDE_PORT}`, PORT, WPFORMS_KEY: KEY, DATA_FILE: dataFile, ALLOWED_ORIGINS: ORIGIN + '/', OWNER_CODE: OWNER, BUILDER_CODE: BUILDER });
+delete env.APP_FILE; delete env.RESET_CODES; delete env.AUTO_QUOTE; delete env.ANTHROPIC_MODEL;
 // Seed an old-style core doc with codes in it, to check the server removes them on start
 fs.writeFileSync(dataFile, JSON.stringify({ seq:1, docs:{ 'app/core': { collection:'app', id:'core', data:{ settings:{ passcode:'ken', builderPasscode:'rob', boardLink:'' } }, version:1, seq:1, deleted:false } } }));
 delete env.DATABASE_URL; delete env.NODE_ENV;
@@ -133,6 +152,59 @@ test('data API: put, list since, delete tombstone', async () => {
   assert.equal(bad.status, 400);
 });
 
+const waitDraft = async id => { for(let i = 0; i < 100; i++){ const d = await (await api('/api/docs/leads/' + id)).json(); if(d.data && d.data.autoQuote && !['working'].includes(d.data.autoQuote.status)) return d.data; await new Promise(r => setTimeout(r, 50)); } throw new Error('no draft for ' + id); };
+test('QuickBooks item list is stored on first start (1,212 items from Ken’s export)', async () => {
+  const d = await (await api('/api/docs/app/qbitems')).json();
+  assert.equal(d.data.count, 1212); assert.deepEqual(d.data.items['RND750.1.1.0'].slice(2), [1.4]); assert.equal(d.data.items['TOOLRESV'][2], 250);
+  const h = await (await fetch(base + '/healthz')).json(); assert.match(h.quickbooksItems, /1212 items/); assert.equal(h.draftQuotes, 'on');
+});
+test('new website lead → Claude drafts the quote: lines, bottle from catalog, assumptions, questions', async () => {
+  const l = await waitDraft('wp_501');
+  const aq = l.autoQuote;
+  assert.equal(aq.status, 'ready'); assert.equal(aq.applied, true); assert.equal(aq.industry, 'spirits'); assert.equal(l.industry, 'spirits');
+  assert.equal(l.lines.length, 2);
+  const [rye, gin] = l.lines;
+  assert.deepEqual([rye.flavor, rye.qty, rye.passes, rye.shape, rye.taper, rye.ml, rye.size, rye.bottleSku], ['Dark Rye', 3000, 2, 'round', false, 375, '375', '375ARIBT']);
+  assert.deepEqual(rye.assumed, []);
+  assert.deepEqual([gin.qty, gin.passes, gin.shape, gin.ml, gin.size, gin.bottleSku], [1000, 1, 'round', 750, '750', '']);
+  assert.deepEqual(gin.assumed.sort(), ['bottle', 'passes', 'quantity']);
+  assert.deepEqual(aq.questions.map(q => q.about), ['quantity', 'passes', 'bottle']);   // Claude's question + one for each other assumption
+  assert.equal(aq.otherRequests, 'Needs art help');
+  assert.ok(l.activity.some(a => a.by === 'Claude' && /Claude drafted a quote: 2 flavors, 3 questions/.test(a.text)));
+  assert.equal(l.stage, 'new');
+});
+test('Claude is sent the request, not the customer’s email, phone or address; key goes in the header', async () => {
+  const call = claudeCalls.find(c => /Harbor Ridge/.test(c.body.messages[0].content));
+  assert.ok(call); assert.equal(call.headers['x-api-key'], 'test-anthropic-key'); assert.equal(call.body.model, 'claude-sonnet-5-5');
+  assert.equal(call.body.tool_choice.name, 'record_quote_request');
+  const all = JSON.stringify(call.body.messages);
+  assert.ok(!/jordan@example\.com|Jordan@Example|201-4400|Avery/i.test(all), 'personal details were sent');
+  assert.match(all, /6,000 round bottles/); assert.match(all, /Contact first name: Jordan/);
+  assert.match(JSON.stringify(call.body.system), /375ARIBT \| 375ml Arizona/);
+});
+test('not a quote request → no lines, marked as such', async () => {
+  const r = await hook({ entry_id:'601', name:'Pat Q', email:'pat@q.example', message:'Are you hiring? Here is my resume.' });
+  assert.equal(r.body.draftQuote, true);
+  const l = await waitDraft('wp_601'); assert.equal(l.autoQuote.status, 'not-a-quote'); assert.equal(l.lines.length, 0);
+});
+test('Claude API error → draft marked failed with the reason', async () => {
+  await hook({ entry_id:'602', name:'Err Case', email:'err@case.example', message:'FAIL-ME please' });
+  const l = await waitDraft('wp_602'); assert.equal(l.autoQuote.status, 'failed'); assert.match(l.autoQuote.error, /bad request \(test\)/);
+});
+test('draft on demand from the app: login required; existing lines kept unless replace', async () => {
+  assert.equal((await fetch(base + '/api/autoquote/wp_503', { method:'POST' })).status, 401);
+  const st = await (await api('/api/autoquote')).json(); assert.equal(st.enabled, true);
+  await waitDraft('wp_503');
+  const r1 = await (await api('/api/autoquote/wp_503', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ text:'Customer email: 6000 square 1L' }) })).json();
+  assert.equal(r1.ok, true); assert.equal(r1.autoQuote.applied, false, 'lines already there from the first draft');
+  const r2 = await (await api('/api/autoquote/wp_503', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ text:'x', replace:true }) })).json();
+  assert.equal(r2.autoQuote.applied, true);
+  const l = (await (await api('/api/docs/leads/wp_503')).json()).data;
+  assert.deepEqual([l.lines[0].shape, l.lines[0].taper, l.lines[0].ml, l.lines[0].size, l.lines[0].qty], ['square', true, 1000, '1000', 6000]);
+  assert.deepEqual(l.lines[0].assumed, ['bottle']);
+  assert.equal((await api('/api/autoquote/nope', { method:'POST' })).status, 404);
+});
+
 test('repeated wrong codes are blocked (runs last: it locks this IP out)', async () => {
   let last;
   for(let i = 0; i < 12; i++) last = await login('wrong-code-' + i);
@@ -146,7 +218,7 @@ test('repeated wrong codes are blocked (runs last: it locks this IP out)', async
     try{ await t.fn(); console.log('  ✓ ' + t.name); }
     catch(e){ failed++; console.log('  ✗ ' + t.name + '\n    ' + e.message); }
   }
-  srv.kill();
+  srv.kill(); fakeClaude.close();
   if(failed){ console.log(`\n${failed} failed. Server log:\n${log}`); process.exit(1); }
   console.log(`\nAll ${tests.length} tests passed.`);
 })();

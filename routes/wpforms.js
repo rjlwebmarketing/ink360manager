@@ -10,6 +10,7 @@ const config = require('../config');
 const { send, readBody, parseBody, clientIp } = require('../lib/http');
 const { rateLimited } = require('../lib/rate-limit');
 const { handleWpforms } = require('../lib/leads-from-wpforms');
+const autoquote = require('../lib/autoquote');
 
 function keyMatches(given){
   const expected = config.wpformsKey;
@@ -30,6 +31,7 @@ module.exports = async function wpforms(req, res, { store, url }){
 
   const body = parseBody(await readBody(req), req.headers['content-type']);
   const result = await handleWpforms(store, body, { form: url.searchParams.get('form') || '' });
+  if(result.action === 'created') result.draftQuote = autoquote.draftInBackground(store, result.leadId);   // Claude drafts the quote after we answer
   console.log(`[wpforms] ${result.action}${result.leadId ? ' ' + result.leadId : ''}${result.reason ? ' — ' + result.reason : ''}`);
   return send(res, result.status || 200, result);
 };

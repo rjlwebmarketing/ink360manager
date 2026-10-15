@@ -2,6 +2,7 @@
 'use strict';
 const config = require('../config');
 const { send } = require('../lib/http');
+const autoquote = require('../lib/autoquote');
 
 module.exports = function health(req, res, { store }){
   const dbOk = store.selfTest === 'passed';
@@ -13,6 +14,8 @@ module.exports = function health(req, res, { store }){
     version: config.version,
     storage: store.kind,
     webhook: !!config.wpformsKey,
+    quickbooksItems: store.qbItems || 'not run',
+    draftQuotes: (s => s.enabled ? (s.auto ? 'on' : 'manual only') : 'off (ANTHROPIC_API_KEY not set)')(autoquote.status()),
     allowedOrigins: config.allowedOrigins
   });
 };
